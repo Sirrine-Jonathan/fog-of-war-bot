@@ -36,8 +36,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GeneralsBot = void 0;
 const socket_io_client_1 = __importDefault(require("socket.io-client"));
-const types_1 = require("./types");
 const utils_1 = require("./utils");
 const dotenv = __importStar(require("dotenv"));
 // Load environment variables from .env file
@@ -76,7 +76,6 @@ class GeneralsBot {
             if (this.gameId) {
                 console.log(`🎮 Joining custom game: ${this.gameId}`);
                 this.socket.emit('join_private', this.gameId, userId);
-                // Don't auto-start - wait for manual start
             }
             else {
                 console.log('🎯 Joining 1v1 queue');
@@ -85,7 +84,7 @@ class GeneralsBot {
         });
         this.socket.on('game_start', (data) => {
             this.playerIndex = data.playerIndex;
-            this.failedMoves.clear(); // Reset failed moves for new game
+            this.failedMoves.clear();
             console.log(`🎲 Game started! Player index: ${this.playerIndex}`);
         });
         this.socket.on('game_update', (data) => {
@@ -109,27 +108,25 @@ class GeneralsBot {
             console.log('🏆 Game ended - Winner:', data.winner);
             console.log('🔄 Resetting bot state for next game...');
             this.resetGameState();
-            // Wait a bit for game reset, then rejoin
             setTimeout(() => {
                 if (this.gameId) {
                     console.log('🎮 Rejoining game room for next game...');
                     const userId = process.env.BOT_USER_ID;
                     this.socket.emit('join_private', this.gameId, userId);
                 }
-            }, 1000); // 1 second delay to ensure game is reset
+            }, 1000);
         });
         this.socket.on('game_lost', () => {
             console.log('💀 Defeat!');
             console.log('🔄 Resetting bot state for next game...');
             this.resetGameState();
-            // Wait a bit for game reset, then rejoin
             setTimeout(() => {
                 if (this.gameId) {
                     console.log('🎮 Rejoining game room for next game...');
                     const userId = process.env.BOT_USER_ID;
                     this.socket.emit('join_private', this.gameId, userId);
                 }
-            }, 1000); // 1 second delay to ensure game is reset
+            }, 1000);
         });
         this.socket.on('disconnect', () => {
             console.log('❌ Disconnected from server');
@@ -167,82 +164,242 @@ class GeneralsBot {
         }
     }
     findBestMove() {
-        const { width, height, armies, terrain } = this.parseMap();
+        const { width, height, armies, terrain, towerDefense } = this.parseMap();
         if (!width || !height || armies.length === 0) {
             console.log(`❌ Invalid map data: ${width}x${height}, armies: ${armies.length}`);
             return null;
         }
-        console.log(`🗺️ Map: ${width}x${height}, Player: ${this.playerIndex}`);
-        console.log(`🎯 My tiles: ${terrain.map((t, i) => t === this.playerIndex ? i : null).filter(x => x !== null).join(', ')}`);
-        const myTiles = [];
-        // Find all my tiles with armies > 1
+        const gamePhase = this.getGamePhase();
+        console.log(`🎯 Game phase: ${gamePhase}`);
+        if (gamePhase === 'early') {
+            return this.findExpansionMove(width, height, armies, terrain);
+        }
+        else if (gamePhase === 'mid') {
+            return this.findCityHuntingMove(width, height, armies, terrain, towerDefense);
+        }
+        else {
+            return this.findCombatMove(width, height, armies, terrain);
+        }
+    }
+    getGamePhase() {
+        const { terrain } = this.parseMap();
+        const myTiles = terrain.filter(t => t === this.playerIndex).length;
+        const enemyTiles = terrain.filter(t => t >= 0 && t !== this.playerIndex).length;
+        if (myTiles < 15)
+            return 'early'; // Rapid expansion phase
+        if (enemyTiles === 0)
+            return 'mid'; // City hunting phase
+        return 'late'; // Combat phase
+    }
+    findExpansionMove(width, height, armies, terrain) {
+        console.log(`🌱 Early game: rapid expansion`);
+        // Find all expansion moves, prioritize by distance from general
+        const moves = [];
+        const generalPos = this.generals[this.playerIndex];
         for (let i = 0; i < terrain.length; i++) {
             if (terrain[i] === this.playerIndex && armies[i] > 1) {
-                myTiles.push(i);
+                const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
+                for (const adj of adjacent) {
+                    if (adj < 0 || adj >= terrain.length)
+                        continue;
+                    if (terrain[adj] !== -1)
+                        continue; // Only expand to empty tiles
+                    const moveKey = `${i}-${adj}`;
+                    if (this.failedMoves.has(moveKey))
+                        continue;
+                    // Prioritize moves further from general for faster expansion
+                    const distFromGeneral = this.getDistance(adj, generalPos, width);
+                    moves.push({ from: i, to: adj, priority: distFromGeneral });
+                }
             }
         }
-        console.log(`🏰 Found ${myTiles.length} tiles with armies > 1: ${myTiles.join(', ')}`);
-        // Try to expand or attack
-        for (const tile of myTiles) {
-            const adjacent = (0, utils_1.getAdjacentIndices)(tile, width, height);
-            for (const adj of adjacent) {
-                if (adj < 0 || adj >= terrain.length)
-                    continue;
-                const moveKey = `${tile}-${adj}`;
-                if (this.failedMoves.has(moveKey))
-                    continue;
-                // Expand to empty tiles
-                if (terrain[adj] === types_1.TILE_EMPTY) {
-                    console.log(`🌱 Expanding to empty tile: ${tile}(${armies[tile]}) → ${adj}(${armies[adj]})`);
-                    return { from: tile, to: adj };
+        if (moves.length === 0)
+            return null;
+        moves.sort((a, b) => b.priority - a.priority);
+        const bestMove = moves[0];
+        console.log(`🎯 Expansion move: ${bestMove.from} → ${bestMove.to}`);
+        return { from: bestMove.from, to: bestMove.to };
+    }
+    findCityHuntingMove(width, height, armies, terrain, towerDefense) {
+        console.log(`🏙️ Mid game: hunting cities`);
+        // First priority: attack cities directly
+        for (let i = 0; i < terrain.length; i++) {
+            if (terrain[i] === this.playerIndex && armies[i] > 1) {
+                const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
+                for (const adj of adjacent) {
+                    if (terrain[adj] === -6 && armies[i] > armies[adj] + 1) {
+                        console.log(`🎯 Attacking city: ${i} → ${adj}`);
+                        return { from: i, to: adj };
+                    }
                 }
-                // Attack weaker enemies
-                if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex &&
-                    armies[tile] > armies[adj] + 1) {
-                    console.log(`⚔️ Attacking enemy: ${tile}(${armies[tile]}) → ${adj}(${armies[adj]})`);
-                    return { from: tile, to: adj };
+            }
+        }
+        // Second priority: move towards nearest city
+        const nearestCity = this.findNearestCity(width, height, terrain);
+        if (nearestCity >= 0) {
+            const moveTowardsCity = this.findMoveTowardsTarget(nearestCity, width, height, armies, terrain);
+            if (moveTowardsCity) {
+                console.log(`🎯 Moving towards city at ${nearestCity}: ${moveTowardsCity.from} → ${moveTowardsCity.to}`);
+                return moveTowardsCity;
+            }
+        }
+        // Fallback: continue expansion
+        return this.findExpansionMove(width, height, armies, terrain);
+    }
+    findCombatMove(width, height, armies, terrain) {
+        console.log(`⚔️ Late game: combat mode`);
+        const enemyGeneral = this.findEnemyGeneral(terrain);
+        const myStrength = this.calculateStrength(terrain, armies);
+        const enemyStrength = this.calculateEnemyStrength(terrain, armies);
+        console.log(`💪 Strength comparison: Me=${myStrength}, Enemy=${enemyStrength}`);
+        if (myStrength < enemyStrength * 0.7) {
+            // Defensive mode
+            console.log(`🛡️ Playing defensively`);
+            return this.findDefensiveMove(width, height, armies, terrain);
+        }
+        else {
+            // Offensive mode
+            console.log(`⚔️ Playing offensively`);
+            if (enemyGeneral >= 0) {
+                const attackMove = this.findMoveTowardsTarget(enemyGeneral, width, height, armies, terrain);
+                if (attackMove)
+                    return attackMove;
+            }
+            // Attack any enemy territory
+            return this.findAttackMove(width, height, armies, terrain);
+        }
+    }
+    findDefensiveMove(width, height, armies, terrain) {
+        const generalPos = this.generals[this.playerIndex];
+        // Move armies towards general for defense
+        for (let i = 0; i < terrain.length; i++) {
+            if (terrain[i] === this.playerIndex && armies[i] > 1) {
+                const distToGeneral = this.getDistance(i, generalPos, width);
+                if (distToGeneral > 2) { // If far from general
+                    const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
+                    for (const adj of adjacent) {
+                        if (terrain[adj] === this.playerIndex) {
+                            const newDist = this.getDistance(adj, generalPos, width);
+                            if (newDist < distToGeneral) {
+                                console.log(`🛡️ Defensive retreat: ${i} → ${adj}`);
+                                return { from: i, to: adj };
+                            }
+                        }
+                    }
                 }
             }
         }
         return null;
     }
+    findAttackMove(width, height, armies, terrain) {
+        for (let i = 0; i < terrain.length; i++) {
+            if (terrain[i] === this.playerIndex && armies[i] > 1) {
+                const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
+                for (const adj of adjacent) {
+                    if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] + 1) {
+                        console.log(`⚔️ Attacking enemy: ${i} → ${adj}`);
+                        return { from: i, to: adj };
+                    }
+                }
+            }
+        }
+        return null;
+    }
+    findMoveTowardsTarget(target, width, height, armies, terrain) {
+        let bestMove = null;
+        let bestDistance = Infinity;
+        for (let i = 0; i < terrain.length; i++) {
+            if (terrain[i] === this.playerIndex && armies[i] > 1) {
+                const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
+                for (const adj of adjacent) {
+                    if (terrain[adj] === -1 || (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] + 1)) {
+                        const distance = this.getDistance(adj, target, width);
+                        if (distance < bestDistance) {
+                            bestDistance = distance;
+                            bestMove = { from: i, to: adj };
+                        }
+                    }
+                }
+            }
+        }
+        return bestMove;
+    }
+    findNearestCity(width, height, terrain) {
+        const myTiles = terrain.map((t, i) => t === this.playerIndex ? i : -1).filter(i => i >= 0);
+        if (myTiles.length === 0)
+            return -1;
+        let nearestCity = -1;
+        let minDistance = Infinity;
+        for (let i = 0; i < terrain.length; i++) {
+            if (terrain[i] === -6) { // City
+                for (const myTile of myTiles) {
+                    const distance = this.getDistance(i, myTile, width);
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        nearestCity = i;
+                    }
+                }
+            }
+        }
+        return nearestCity;
+    }
+    findEnemyGeneral(terrain) {
+        for (let i = 0; i < this.generals.length; i++) {
+            if (i !== this.playerIndex && this.generals[i] >= 0) {
+                return this.generals[i];
+            }
+        }
+        return -1;
+    }
+    calculateStrength(terrain, armies) {
+        return armies.reduce((sum, army, i) => terrain[i] === this.playerIndex ? sum + army : sum, 0);
+    }
+    calculateEnemyStrength(terrain, armies) {
+        return armies.reduce((sum, army, i) => terrain[i] >= 0 && terrain[i] !== this.playerIndex ? sum + army : sum, 0);
+    }
+    getDistance(pos1, pos2, width) {
+        const row1 = Math.floor(pos1 / width);
+        const col1 = pos1 % width;
+        const row2 = Math.floor(pos2 / width);
+        const col2 = pos2 % width;
+        return Math.abs(row1 - row2) + Math.abs(col1 - col2);
+    }
     parseMap() {
         if (this.map.length < 2) {
             console.log(`❌ Map too short: ${this.map.length}`);
-            return { width: 0, height: 0, armies: [], terrain: [] };
+            return { width: 0, height: 0, armies: [], terrain: [], towerDefense: [] };
         }
         const width = this.map[0];
         const height = this.map[1];
         const size = width * height;
-        if (this.map.length < size * 2 + 2) {
-            console.log(`❌ Map data incomplete: expected ${size * 2 + 2}, got ${this.map.length}`);
-            return { width: 0, height: 0, armies: [], terrain: [] };
+        if (this.map.length < size * 3 + 2) {
+            console.log(`❌ Map data incomplete: expected ${size * 3 + 2}, got ${this.map.length}`);
+            return { width: 0, height: 0, armies: [], terrain: [], towerDefense: [] };
         }
         const armies = this.map.slice(2, size + 2);
-        const terrain = this.map.slice(size + 2, size + 2 + size);
-        console.log(`🔍 Raw map data: [${this.map.slice(0, 10).join(',')}...] (${this.map.length} total)`);
-        console.log(`🔍 Terrain sample: [${terrain.slice(0, 10).join(',')}...]`);
-        console.log(`🔍 Armies sample: [${armies.slice(0, 10).join(',')}...]`);
-        return { width, height, armies, terrain };
+        const terrain = this.map.slice(size + 2, size * 2 + 2);
+        const towerDefense = this.map.slice(size * 2 + 2, size * 3 + 2);
+        return { width, height, armies, terrain, towerDefense };
     }
 }
-// Parse command line arguments
-const args = process.argv.slice(2);
-const serverUrl = args.find(arg => arg.startsWith('--server='))?.split('=')[1] ||
-    process.env.HOST ||
-    'http://localhost:3001';
-const gameId = args.find(arg => arg.startsWith('--game='))?.split('=')[1] ||
-    process.env.GAME_ID ||
-    undefined; // undefined means auto-match
-console.log('Starting bot with:');
-console.log('Server:', serverUrl);
-console.log('Game ID:', gameId || 'Auto-match');
-// Start the bot
-const bot = new GeneralsBot(serverUrl, gameId);
-// Add simple force start on any input
-process.stdin.on('data', () => {
-    if (gameId) {
-        console.log('🚀 Force starting game...');
-        bot.socket.emit('set_force_start', gameId, true);
-    }
-});
+exports.GeneralsBot = GeneralsBot;
+// Legacy CLI support - only run if this file is executed directly
+if (require.main === module) {
+    const args = process.argv.slice(2);
+    const serverUrl = args.find(arg => arg.startsWith('--server='))?.split('=')[1] ||
+        process.env.HOST ||
+        'http://localhost:3001';
+    const gameId = args.find(arg => arg.startsWith('--game='))?.split('=')[1] ||
+        process.env.GAME_ID ||
+        undefined;
+    console.log('Starting bot with:');
+    console.log('Server:', serverUrl);
+    console.log('Game ID:', gameId || 'Auto-match');
+    const bot = new GeneralsBot(serverUrl, gameId);
+    process.stdin.on('data', () => {
+        if (gameId) {
+            console.log('🚀 Force starting game...');
+            bot.socket.emit('set_force_start', gameId, true);
+        }
+    });
+}
