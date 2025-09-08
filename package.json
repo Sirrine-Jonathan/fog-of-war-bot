@@ -1,0 +1,22 @@
+{
+  "name": "generals-bot",
+  "version": "1.0.0",
+  "description": "TypeScript bot for generals.io",
+  "main": "dist/bot.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/bot.js",
+    "dev": "ts-node src/bot.ts",
+    "local": "ts-node src/bot.ts --server=http://localhost:3001"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.2",
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/socket.io-client": "^1.4.36",
+    "ts-node": "^10.0.0",
+    "typescript": "^5.0.0"
+  }
+}
