@@ -1,6 +1,6 @@
-# Generals.io TypeScript Bot
+# Fog of War TypeScript Bot
 
-A TypeScript bot for playing generals.io built from the reverse-engineered API documentation.
+A TypeScript bot for playing Fog of War.
 
 ## Setup
 

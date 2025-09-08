@@ -43,7 +43,7 @@ const dotenv = __importStar(require("dotenv"));
 // Load environment variables from .env file
 dotenv.config();
 class GeneralsBot {
-    constructor(serverUrl = 'http://botws.generals.io', gameId) {
+    constructor(serverUrl = 'https://fog-of-war-0f4f.onrender.com', gameId) {
         this.playerIndex = -1;
         this.generals = [];
         this.cities = [];
@@ -87,7 +87,6 @@ class GeneralsBot {
             this.playerIndex = data.playerIndex;
             this.failedMoves.clear(); // Reset failed moves for new game
             console.log(`🎲 Game started! Player index: ${this.playerIndex}`);
-            console.log(`📺 Replay: http://bot.generals.io/replays/${data.replay_id}`);
         });
         this.socket.on('game_update', (data) => {
             const prevTiles = this.map.length > 0 ? this.parseMap().terrain.filter(t => t === this.playerIndex).length : 0;

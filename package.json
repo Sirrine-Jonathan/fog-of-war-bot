@@ -1,7 +1,7 @@
 {
-  "name": "generals-bot",
+  "name": "fog-of-war-bot",
   "version": "1.0.0",
-  "description": "TypeScript bot for generals.io",
+  "description": "TypeScript bot for Fog of War",
   "main": "dist/bot.js",
   "scripts": {
     "build": "tsc",

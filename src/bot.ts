@@ -17,7 +17,7 @@ class GeneralsBot {
   private lastMove: Move | null = null;
   private failedMoves: Set<string> = new Set();
 
-  constructor(serverUrl: string = 'http://botws.generals.io', gameId?: string) {
+  constructor(serverUrl: string = 'https://fog-of-war-0f4f.onrender.com', gameId?: string) {
     this.serverUrl = serverUrl;
     this.gameId = gameId;
     
@@ -62,7 +62,6 @@ class GeneralsBot {
       this.playerIndex = data.playerIndex;
       this.failedMoves.clear(); // Reset failed moves for new game
       console.log(`🎲 Game started! Player index: ${this.playerIndex}`);
-      console.log(`📺 Replay: http://bot.generals.io/replays/${data.replay_id}`);
     });
 
     this.socket.on('game_update', (data: GameUpdateData) => {
