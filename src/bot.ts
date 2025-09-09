@@ -14,8 +14,6 @@ export class GeneralsBot {
   private map: number[] = [];
   public serverUrl: string;
   public gameId?: string;
-  private lastMove: Move | null = null;
-  private failedMoves: Set<string> = new Set();
 
   constructor(serverUrl: string = 'https://fog-of-war-0f4f.onrender.com', gameId?: string) {
     this.serverUrl = serverUrl;
@@ -38,61 +36,51 @@ export class GeneralsBot {
 
   private setupEventHandlers(): void {
     this.socket.on('connect', () => {
-      console.log(`✅ Connected to server: ${this.serverUrl}`);
+      console.log(`Connected: ${this.serverUrl}`);
       const userId = process.env.BOT_USER_ID;
       
       if (!userId) {
         throw new Error('BOT_USER_ID environment variable is required');
       }
       
-      console.log(`🤖 Setting username: userId=${userId}, username=${userId}`);
       this.socket.emit('set_username', userId, userId);
       
       if (this.gameId) {
-        console.log(`🎮 Joining custom game: ${this.gameId}`);
+        console.log(`Joining game: ${this.gameId}`);
         this.socket.emit('join_private', this.gameId, userId);
       } else {
-        console.log('🎯 Joining 1v1 queue');
         this.socket.emit('join_1v1', userId);
       }
     });
 
     this.socket.on('game_start', (data: GameStartData) => {
       this.playerIndex = data.playerIndex;
-      this.failedMoves.clear();
-      console.log(`🎲 Game started! Player index: ${this.playerIndex}`);
+      console.log(`Game started, player ${this.playerIndex}`);
     });
 
     this.socket.on('game_update', (data: GameUpdateData) => {
-      const prevTiles = this.map.length > 0 ? this.parseMap().terrain.filter(t => t === this.playerIndex).length : 0;
-      
       this.cities = patch(this.cities, data.cities_diff);
       this.map = patch(this.map, data.map_diff);
       this.generals = data.generals;
       
-      const { width, height, armies, terrain } = this.parseMap();
+      const { armies, terrain } = this.parseMap();
       const myTiles = terrain.filter(t => t === this.playerIndex).length;
       const myArmies = armies.reduce((sum, army, i) => terrain[i] === this.playerIndex ? sum + army : sum, 0);
       
-      // Check if last move failed
-      if (this.lastMove && myTiles === prevTiles) {
-        const moveKey = `${this.lastMove.from}-${this.lastMove.to}`;
-        this.failedMoves.add(moveKey);
-        console.log(`❌ Move failed, blacklisting: ${moveKey}`);
-      }
-      
-      console.log(`📊 Update: ${myTiles} tiles, ${myArmies} armies`);
+      console.log(`T${myTiles} A${myArmies}`);
       this.makeMove();
     });
 
     this.socket.on('game_won', (data: any) => {
-      console.log('🏆 Game ended - Winner:', data.winner);
-      console.log('🔄 Resetting bot state for next game...');
+      if (data.winner === this.playerIndex) {
+        console.log('Won');
+      } else {
+        console.log('Lost');
+      }
       this.resetGameState();
       
       setTimeout(() => {
         if (this.gameId) {
-          console.log('🎮 Rejoining game room for next game...');
           const userId = process.env.BOT_USER_ID;
           this.socket.emit('join_private', this.gameId, userId);
         }
@@ -100,13 +88,11 @@ export class GeneralsBot {
     });
 
     this.socket.on('game_lost', () => {
-      console.log('💀 Defeat!');
-      console.log('🔄 Resetting bot state for next game...');
+      console.log('Lost');
       this.resetGameState();
       
       setTimeout(() => {
         if (this.gameId) {
-          console.log('🎮 Rejoining game room for next game...');
           const userId = process.env.BOT_USER_ID;
           this.socket.emit('join_private', this.gameId, userId);
         }
@@ -114,15 +100,15 @@ export class GeneralsBot {
     });
 
     this.socket.on('disconnect', () => {
-      console.log('❌ Disconnected from server');
+      console.log('Disconnected');
     });
 
     this.socket.on('connect_error', (error: any) => {
-      console.error('🚫 Connection error:', error);
+      console.error('Connection error:', error);
     });
 
     this.socket.on('error', (error: any) => {
-      console.error('⚠️ Socket error:', error);
+      console.error('Socket error:', error);
     });
   }
 
@@ -131,258 +117,118 @@ export class GeneralsBot {
     this.generals = [];
     this.cities = [];
     this.map = [];
-    this.lastMove = null;
-    this.failedMoves.clear();
-    console.log('✅ Bot state reset complete');
   }
 
   private makeMove(): void {
-    const move = this.findBestMove();
+    const move = this.findExpansionMove();
     if (move) {
-      const moveKey = `${move.from}-${move.to}`;
-      if (this.failedMoves.has(moveKey)) {
-        console.log(`🚫 Skipping failed move: ${move.from} → ${move.to}`);
-        return;
-      }
-      
-      console.log(`⚔️ Attacking: ${move.from} → ${move.to}`);
-      this.lastMove = move;
+      console.log(`${move.from}→${move.to}`);
       this.socket.emit('attack', move.from, move.to);
     } else {
-      console.log(`🤔 No valid moves found`);
+      console.log(`NO MOVES`);
     }
   }
 
-  private findBestMove(): Move | null {
-    const { width, height, armies, terrain, towerDefense } = this.parseMap();
+  private findExpansionMove(): Move | null {
+    const { width, height, armies, terrain } = this.parseMap();
     
     if (!width || !height || armies.length === 0) {
-      console.log(`❌ Invalid map data: ${width}x${height}, armies: ${armies.length}`);
       return null;
     }
 
-    const gamePhase = this.getGamePhase();
-    console.log(`🎯 Game phase: ${gamePhase}`);
-
-    if (gamePhase === 'early') {
-      return this.findExpansionMove(width, height, armies, terrain);
-    } else if (gamePhase === 'mid') {
-      return this.findCityHuntingMove(width, height, armies, terrain, towerDefense);
-    } else {
-      return this.findCombatMove(width, height, armies, terrain);
-    }
-  }
-
-  private getGamePhase(): 'early' | 'mid' | 'late' {
-    const { terrain } = this.parseMap();
-    const myTiles = terrain.filter(t => t === this.playerIndex).length;
-    const enemyTiles = terrain.filter(t => t >= 0 && t !== this.playerIndex).length;
-    
-    if (myTiles < 15) return 'early'; // Rapid expansion phase
-    if (enemyTiles === 0) return 'mid'; // City hunting phase
-    return 'late'; // Combat phase
-  }
-
-  private findExpansionMove(width: number, height: number, armies: number[], terrain: number[]): Move | null {
-    console.log(`🌱 Early game: rapid expansion`);
-    
-    // Find all expansion moves, prioritize by distance from general
-    const moves: Array<{from: number, to: number, priority: number}> = [];
-    const generalPos = this.generals[this.playerIndex];
-    
+    // First priority: capture cities (huge strategic value)
+    const cityMoves = [];
     for (let i = 0; i < terrain.length; i++) {
       if (terrain[i] === this.playerIndex && armies[i] > 1) {
         const adjacent = getAdjacentIndices(i, width, height);
         
         for (const adj of adjacent) {
-          if (adj < 0 || adj >= terrain.length) continue;
-          if (terrain[adj] !== -1) continue; // Only expand to empty tiles
-          
-          const moveKey = `${i}-${adj}`;
-          if (this.failedMoves.has(moveKey)) continue;
-          
-          // Prioritize moves further from general for faster expansion
-          const distFromGeneral = this.getDistance(adj, generalPos, width);
-          moves.push({ from: i, to: adj, priority: distFromGeneral });
-        }
-      }
-    }
-    
-    if (moves.length === 0) return null;
-    
-    moves.sort((a, b) => b.priority - a.priority);
-    const bestMove = moves[0];
-    console.log(`🎯 Expansion move: ${bestMove.from} → ${bestMove.to}`);
-    return { from: bestMove.from, to: bestMove.to };
-  }
-
-  private findCityHuntingMove(width: number, height: number, armies: number[], terrain: number[], towerDefense: number[]): Move | null {
-    console.log(`🏙️ Mid game: hunting cities`);
-    
-    // First priority: attack cities directly
-    for (let i = 0; i < terrain.length; i++) {
-      if (terrain[i] === this.playerIndex && armies[i] > 1) {
-        const adjacent = getAdjacentIndices(i, width, height);
-        
-        for (const adj of adjacent) {
-          if (terrain[adj] === -6 && armies[i] > armies[adj] + 1) {
-            console.log(`🎯 Attacking city: ${i} → ${adj}`);
-            return { from: i, to: adj };
+          if (terrain[adj] === -6 && armies[i] > armies[adj] + 1) { // City
+            cityMoves.push({ from: i, to: adj, armies: armies[i] });
           }
         }
       }
     }
-    
-    // Second priority: move towards nearest city
-    const nearestCity = this.findNearestCity(width, height, terrain);
-    if (nearestCity >= 0) {
-      const moveTowardsCity = this.findMoveTowardsTarget(nearestCity, width, height, armies, terrain);
-      if (moveTowardsCity) {
-        console.log(`🎯 Moving towards city at ${nearestCity}: ${moveTowardsCity.from} → ${moveTowardsCity.to}`);
-        return moveTowardsCity;
-      }
+    if (cityMoves.length > 0) {
+      cityMoves.sort((a, b) => b.armies - a.armies); // Prefer larger armies
+      return { from: cityMoves[0].from, to: cityMoves[0].to };
     }
-    
-    // Fallback: continue expansion
-    return this.findExpansionMove(width, height, armies, terrain);
-  }
 
-  private findCombatMove(width: number, height: number, armies: number[], terrain: number[]): Move | null {
-    console.log(`⚔️ Late game: combat mode`);
-    
-    const enemyGeneral = this.findEnemyGeneral(terrain);
-    const myStrength = this.calculateStrength(terrain, armies);
-    const enemyStrength = this.calculateEnemyStrength(terrain, armies);
-    
-    console.log(`💪 Strength comparison: Me=${myStrength}, Enemy=${enemyStrength}`);
-    
-    if (myStrength < enemyStrength * 0.7) {
-      // Defensive mode
-      console.log(`🛡️ Playing defensively`);
-      return this.findDefensiveMove(width, height, armies, terrain);
-    } else {
-      // Offensive mode
-      console.log(`⚔️ Playing offensively`);
-      if (enemyGeneral >= 0) {
-        const attackMove = this.findMoveTowardsTarget(enemyGeneral, width, height, armies, terrain);
-        if (attackMove) return attackMove;
-      }
-      
-      // Attack any enemy territory
-      return this.findAttackMove(width, height, armies, terrain);
-    }
-  }
-
-  private findDefensiveMove(width: number, height: number, armies: number[], terrain: number[]): Move | null {
-    const generalPos = this.generals[this.playerIndex];
-    
-    // Move armies towards general for defense
-    for (let i = 0; i < terrain.length; i++) {
-      if (terrain[i] === this.playerIndex && armies[i] > 1) {
-        const distToGeneral = this.getDistance(i, generalPos, width);
-        if (distToGeneral > 2) { // If far from general
-          const adjacent = getAdjacentIndices(i, width, height);
-          
-          for (const adj of adjacent) {
-            if (terrain[adj] === this.playerIndex) {
-              const newDist = this.getDistance(adj, generalPos, width);
-              if (newDist < distToGeneral) {
-                console.log(`🛡️ Defensive retreat: ${i} → ${adj}`);
-                return { from: i, to: adj };
-              }
-            }
-          }
-        }
-      }
-    }
-    
-    return null;
-  }
-
-  private findAttackMove(width: number, height: number, armies: number[], terrain: number[]): Move | null {
+    // Second priority: attack enemy territory
+    const attackMoves = [];
     for (let i = 0; i < terrain.length; i++) {
       if (terrain[i] === this.playerIndex && armies[i] > 1) {
         const adjacent = getAdjacentIndices(i, width, height);
         
         for (const adj of adjacent) {
           if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] + 1) {
-            console.log(`⚔️ Attacking enemy: ${i} → ${adj}`);
-            return { from: i, to: adj };
+            attackMoves.push({ from: i, to: adj, armies: armies[i] });
           }
         }
       }
     }
-    return null;
-  }
+    if (attackMoves.length > 0) {
+      attackMoves.sort((a, b) => b.armies - a.armies); // Prefer larger armies
+      return { from: attackMoves[0].from, to: attackMoves[0].to };
+    }
 
-  private findMoveTowardsTarget(target: number, width: number, height: number, armies: number[], terrain: number[]): Move | null {
-    let bestMove: Move | null = null;
-    let bestDistance = Infinity;
-    
+    // Third priority: expand to empty tiles
+    const expansionMoves = [];
     for (let i = 0; i < terrain.length; i++) {
       if (terrain[i] === this.playerIndex && armies[i] > 1) {
         const adjacent = getAdjacentIndices(i, width, height);
         
         for (const adj of adjacent) {
-          if (terrain[adj] === -1 || (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] + 1)) {
-            const distance = this.getDistance(adj, target, width);
-            if (distance < bestDistance) {
-              bestDistance = distance;
-              bestMove = { from: i, to: adj };
-            }
+          if (terrain[adj] === -1) { // Empty tile
+            expansionMoves.push({ from: i, to: adj, armies: armies[i] });
           }
         }
       }
     }
+    if (expansionMoves.length > 0) {
+      expansionMoves.sort((a, b) => b.armies - a.armies); // Prefer larger armies
+      return { from: expansionMoves[0].from, to: expansionMoves[0].to };
+    }
     
-    return bestMove;
-  }
-
-  private findNearestCity(width: number, height: number, terrain: number[]): number {
-    const myTiles = terrain.map((t, i) => t === this.playerIndex ? i : -1).filter(i => i >= 0);
-    if (myTiles.length === 0) return -1;
-    
-    let nearestCity = -1;
-    let minDistance = Infinity;
-    
+    // Fourth priority: move armies toward frontline tiles (tiles that border empty space or cities)
+    const myTiles = [];
     for (let i = 0; i < terrain.length; i++) {
-      if (terrain[i] === -6) { // City
-        for (const myTile of myTiles) {
-          const distance = this.getDistance(i, myTile, width);
-          if (distance < minDistance) {
-            minDistance = distance;
-            nearestCity = i;
+      if (terrain[i] === this.playerIndex && armies[i] > 1) {
+        myTiles.push({ index: i, armies: armies[i] });
+      }
+    }
+    
+    // Sort by army count (highest first)
+    myTiles.sort((a, b) => b.armies - a.armies);
+    
+    for (const tile of myTiles) {
+      const adjacent = getAdjacentIndices(tile.index, width, height);
+      
+      for (const adj of adjacent) {
+        if (terrain[adj] === this.playerIndex && armies[adj] < tile.armies - 5) {
+          // Check if target tile is on frontline (borders empty space or cities)
+          const targetAdjacent = getAdjacentIndices(adj, width, height);
+          const isOnFrontline = targetAdjacent.some(t => terrain[t] === -1 || terrain[t] === -6);
+          
+          if (isOnFrontline) {
+            return { from: tile.index, to: adj };
           }
         }
       }
     }
     
-    return nearestCity;
-  }
-
-  private findEnemyGeneral(terrain: number[]): number {
-    for (let i = 0; i < this.generals.length; i++) {
-      if (i !== this.playerIndex && this.generals[i] >= 0) {
-        return this.generals[i];
+    // Fallback: any move with significant army difference
+    for (const tile of myTiles) {
+      const adjacent = getAdjacentIndices(tile.index, width, height);
+      
+      for (const adj of adjacent) {
+        if (terrain[adj] === this.playerIndex && armies[adj] < tile.armies - 5) {
+          return { from: tile.index, to: adj };
+        }
       }
     }
-    return -1;
-  }
-
-  private calculateStrength(terrain: number[], armies: number[]): number {
-    return armies.reduce((sum, army, i) => terrain[i] === this.playerIndex ? sum + army : sum, 0);
-  }
-
-  private calculateEnemyStrength(terrain: number[], armies: number[]): number {
-    return armies.reduce((sum, army, i) => terrain[i] >= 0 && terrain[i] !== this.playerIndex ? sum + army : sum, 0);
-  }
-
-  private getDistance(pos1: number, pos2: number, width: number): number {
-    const row1 = Math.floor(pos1 / width);
-    const col1 = pos1 % width;
-    const row2 = Math.floor(pos2 / width);
-    const col2 = pos2 % width;
-    return Math.abs(row1 - row2) + Math.abs(col1 - col2);
+    
+    return null;
   }
 
   private parseMap() {
