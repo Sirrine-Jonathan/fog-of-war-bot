@@ -136,6 +136,8 @@ export class GeneralsBot {
       return null;
     }
 
+    const generalPos = this.generals[this.playerIndex];
+
     // First priority: capture cities (huge strategic value)
     const cityMoves = [];
     for (let i = 0; i < terrain.length; i++) {
@@ -143,8 +145,12 @@ export class GeneralsBot {
         const adjacent = getAdjacentIndices(i, width, height);
         
         for (const adj of adjacent) {
-          if (terrain[adj] === -6 && armies[i] > armies[adj] + 1) { // City
-            cityMoves.push({ from: i, to: adj, armies: armies[i] });
+          if (terrain[adj] === -6 && armies[i] > armies[adj] * 2 + 1) { // City - overwhelming force
+            // General protection: don't leave general area weak
+            const distFromGeneral = this.getDistance(i, generalPos, width);
+            if (distFromGeneral > 3 || this.getArmiesNearGeneral(width, height, armies, terrain) > 10) {
+              cityMoves.push({ from: i, to: adj, armies: armies[i] });
+            }
           }
         }
       }
@@ -161,8 +167,12 @@ export class GeneralsBot {
         const adjacent = getAdjacentIndices(i, width, height);
         
         for (const adj of adjacent) {
-          if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] + 1) {
-            attackMoves.push({ from: i, to: adj, armies: armies[i] });
+          if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] * 2 + 1) { // Overwhelming force
+            // General protection: don't leave general area weak
+            const distFromGeneral = this.getDistance(i, generalPos, width);
+            if (distFromGeneral > 3 || this.getArmiesNearGeneral(width, height, armies, terrain) > 10) {
+              attackMoves.push({ from: i, to: adj, armies: armies[i] });
+            }
           }
         }
       }
@@ -229,6 +239,30 @@ export class GeneralsBot {
     }
     
     return null;
+  }
+
+  private getArmiesNearGeneral(width: number, height: number, armies: number[], terrain: number[]): number {
+    const generalPos = this.generals[this.playerIndex];
+    let totalArmies = 0;
+    
+    for (let i = 0; i < terrain.length; i++) {
+      if (terrain[i] === this.playerIndex) {
+        const distance = this.getDistance(i, generalPos, width);
+        if (distance <= 3) {
+          totalArmies += armies[i];
+        }
+      }
+    }
+    
+    return totalArmies;
+  }
+
+  private getDistance(pos1: number, pos2: number, width: number): number {
+    const row1 = Math.floor(pos1 / width);
+    const col1 = pos1 % width;
+    const row2 = Math.floor(pos2 / width);
+    const col2 = pos2 % width;
+    return Math.abs(row1 - row2) + Math.abs(col1 - col2);
   }
 
   private parseMap() {
