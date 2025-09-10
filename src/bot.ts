@@ -122,11 +122,29 @@ export class GeneralsBot {
   private makeMove(): void {
     const move = this.findExpansionMove();
     if (move) {
-      console.log(`${move.from}→${move.to}`);
+      const { armies, terrain } = this.parseMap();
+      const moveType = this.getMoveType(move.to, terrain);
+      console.log(`${move.from}→${move.to}(${armies[move.from]}→${armies[move.to]}) ${moveType}`);
       this.socket.emit('attack', move.from, move.to);
     } else {
-      console.log(`NO MOVES`);
+      const { armies, terrain } = this.parseMap();
+      const myTiles = terrain.filter(t => t === this.playerIndex).length;
+      const availableMoves = this.countAvailableMoves(armies, terrain);
+      console.log(`NO MOVES (${myTiles}t, ${availableMoves}av)`);
     }
+  }
+
+  private getMoveType(targetTile: number, terrain: number[]): string {
+    const target = terrain[targetTile];
+    if (target === -1) return 'EXP';
+    if (target === -6) return 'CITY';
+    if (target >= 0 && target !== this.playerIndex) return 'ATK';
+    if (target === this.playerIndex) return 'REIN';
+    return 'UNK';
+  }
+
+  private countAvailableMoves(armies: number[], terrain: number[]): number {
+    return terrain.filter((t, i) => t === this.playerIndex && armies[i] > 1).length;
   }
 
   private findExpansionMove(): Move | null {
@@ -223,17 +241,6 @@ export class GeneralsBot {
           if (isOnFrontline) {
             return { from: tile.index, to: adj };
           }
-        }
-      }
-    }
-    
-    // Fallback: any move with significant army difference
-    for (const tile of myTiles) {
-      const adjacent = getAdjacentIndices(tile.index, width, height);
-      
-      for (const adj of adjacent) {
-        if (terrain[adj] === this.playerIndex && armies[adj] < tile.armies - 5) {
-          return { from: tile.index, to: adj };
         }
       }
     }
