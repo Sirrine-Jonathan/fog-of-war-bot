@@ -447,6 +447,72 @@ export class GeneralsBot {
       return null;
     }
 
+    // Calculate required force for assault (estimate enemy general strength)
+    const requiredForce = this.estimateRequiredForce();
+    const availableForce = this.calculateAvailableForce(terrain, armies);
+    
+    // If we don't have enough force, accumulate armies first
+    if (availableForce < requiredForce) {
+      return this.findArmyAccumulationMove();
+    }
+
+    // We have enough force - launch coordinated assault
+    return this.findCoordinatedAssaultMove();
+  }
+
+  private estimateRequiredForce(): number {
+    // Conservative estimate: assume enemy general has significant protection
+    // In real game, we'd analyze visible enemy territory
+    return 50; // Minimum force needed for successful assault
+  }
+
+  private calculateAvailableForce(terrain: number[], armies: number[]): number {
+    let totalForce = 0;
+    for (let i = 0; i < terrain.length; i++) {
+      if (terrain[i] === this.playerIndex && armies[i] > 5) {
+        totalForce += armies[i] - 1; // -1 because we need to leave 1 army
+      }
+    }
+    return totalForce;
+  }
+
+  private findArmyAccumulationMove(): Move | null {
+    const { width, height, armies, terrain } = this.parseMap();
+    
+    // Find the strongest army closest to target general
+    let bestSource = -1;
+    let bestDistance = Infinity;
+    let bestArmies = 0;
+    
+    for (let i = 0; i < terrain.length; i++) {
+      if (terrain[i] === this.playerIndex && armies[i] > 5) {
+        const distance = this.getManhattanDistance(i, this.targetGeneral, width);
+        if (distance < bestDistance || (distance === bestDistance && armies[i] > bestArmies)) {
+          bestSource = i;
+          bestDistance = distance;
+          bestArmies = armies[i];
+        }
+      }
+    }
+    
+    if (bestSource === -1) return null;
+    
+    // Move other armies toward this accumulation point
+    for (let i = 0; i < terrain.length; i++) {
+      if (terrain[i] === this.playerIndex && armies[i] > 3 && i !== bestSource) {
+        const path = this.findPathToTarget(i, bestSource, width, height, terrain);
+        if (path && path.length > 1) {
+          return { from: i, to: path[1] };
+        }
+      }
+    }
+    
+    return null;
+  }
+
+  private findCoordinatedAssaultMove(): Move | null {
+    const { width, height, armies, terrain } = this.parseMap();
+    
     // Find the strongest army that can move toward the target general
     let bestMove: Move | null = null;
     let bestArmies = 0;
@@ -462,6 +528,15 @@ export class GeneralsBot {
     }
     
     return bestMove;
+  }
+
+  private getManhattanDistance(pos1: number, pos2: number, width: number): number {
+    const x1 = pos1 % width;
+    const y1 = Math.floor(pos1 / width);
+    const x2 = pos2 % width;
+    const y2 = Math.floor(pos2 / width);
+    
+    return Math.abs(x1 - x2) + Math.abs(y1 - y2);
   }
 
   private findPathToTarget(start: number, target: number, width: number, height: number, terrain: number[]): number[] | null {
