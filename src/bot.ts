@@ -358,12 +358,14 @@ export class GeneralsBot {
       }
     }
     
-    // Update known enemy generals
+    // Update known enemy generals - only from actual discoveries
     for (let i = 0; i < this.generals.length; i++) {
       if (i !== this.playerIndex && this.generals[i] !== -1) {
+        // We can see this enemy general (discovered through fog of war)
         this.knownEnemyGenerals.set(i, this.generals[i]);
         if (this.targetGeneral === -1) {
           this.targetGeneral = this.generals[i];
+          console.log(`🎯 Enemy general discovered at position ${this.targetGeneral}!`);
         }
       }
     }
@@ -416,25 +418,47 @@ export class GeneralsBot {
       return null;
     }
 
-    // Search for enemies by probing unknown areas
-    const probingMoves: Array<{from: number, to: number, armies: number}> = [];
+    // Prioritize attacking any enemy territory we can see
+    const enemyAttacks: Array<{from: number, to: number, armies: number}> = [];
     
     for (let i = 0; i < terrain.length; i++) {
-      if (terrain[i] === this.playerIndex && armies[i] > 5) { // Use stronger tiles for probing
+      if (terrain[i] === this.playerIndex && armies[i] > 3) {
         const adjacent = getAdjacentIndices(i, width, height);
         
         for (const adj of adjacent) {
-          if (terrain[adj] === -1 || (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex)) {
-            probingMoves.push({ from: i, to: adj, armies: armies[i] });
+          // Attack any enemy territory (might reveal generals)
+          if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex) {
+            enemyAttacks.push({ from: i, to: adj, armies: armies[i] });
           }
         }
       }
     }
     
-    if (probingMoves.length > 0) {
-      // Use strongest available army for probing
-      probingMoves.sort((a, b) => b.armies - a.armies);
-      return { from: probingMoves[0].from, to: probingMoves[0].to };
+    if (enemyAttacks.length > 0) {
+      // Use strongest army for enemy attacks
+      enemyAttacks.sort((a, b) => b.armies - a.armies);
+      return { from: enemyAttacks[0].from, to: enemyAttacks[0].to };
+    }
+
+    // No enemies visible - expand aggressively to find them
+    const expansionMoves: Array<{from: number, to: number, armies: number}> = [];
+    
+    for (let i = 0; i < terrain.length; i++) {
+      if (terrain[i] === this.playerIndex && armies[i] > 2) {
+        const adjacent = getAdjacentIndices(i, width, height);
+        
+        for (const adj of adjacent) {
+          if (terrain[adj] === -1) { // Empty territory
+            expansionMoves.push({ from: i, to: adj, armies: armies[i] });
+          }
+        }
+      }
+    }
+    
+    if (expansionMoves.length > 0) {
+      // Use strongest armies for expansion to maximize discovery
+      expansionMoves.sort((a, b) => b.armies - a.armies);
+      return { from: expansionMoves[0].from, to: expansionMoves[0].to };
     }
     
     return null;
@@ -569,9 +593,9 @@ export class GeneralsBot {
     if (this.expansionPhase) {
       return 'EXPAND';
     } else if (this.targetGeneral !== -1) {
-      return 'ASSAULT';
+      return `ASSAULT(${this.targetGeneral})`;
     } else {
-      return 'SEARCH';
+      return `HUNT(${this.knownEnemyGenerals.size} found)`;
     }
   }
 }
