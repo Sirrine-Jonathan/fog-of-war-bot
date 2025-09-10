@@ -15,6 +15,8 @@ export class GeneralsBot {
   public serverUrl: string;
   public gameId?: string;
   private turnCount: number = 0;
+  private lastMove: Move | null = null;
+  private moveHistory: Move[] = [];
 
   constructor(serverUrl: string = 'https://fog-of-war-0f4f.onrender.com', gameId?: string) {
     this.serverUrl = serverUrl;
@@ -120,6 +122,8 @@ export class GeneralsBot {
     this.cities = [];
     this.map = [];
     this.turnCount = 0;
+    this.lastMove = null;
+    this.moveHistory = [];
   }
 
   private makeMove(): void {
@@ -128,6 +132,14 @@ export class GeneralsBot {
       const { armies, terrain } = this.parseMap();
       const moveType = this.getMoveType(move.to, terrain);
       console.log(`T${this.turnCount} ${move.from}→${move.to}(${armies[move.from]}→${armies[move.to]}) ${moveType} [SIMPLE]`);
+      
+      // Track move history for oscillation prevention
+      this.lastMove = move;
+      this.moveHistory.push(move);
+      if (this.moveHistory.length > 10) {
+        this.moveHistory.shift();
+      }
+      
       this.socket.emit('attack', move.from, move.to);
     } else {
       const { armies, terrain } = this.parseMap();
@@ -144,49 +156,90 @@ export class GeneralsBot {
       return null;
     }
 
-    // Simple Rule 1: Use the tile with the most armies
-    let bestTile = -1;
-    let mostArmies = 0;
-    
+    // Get all valid source tiles (my tiles with >1 army)
+    const validSources: number[] = [];
     for (let i = 0; i < terrain.length; i++) {
-      if (terrain[i] === this.playerIndex && armies[i] > mostArmies) {
-        mostArmies = armies[i];
-        bestTile = i;
+      if (terrain[i] === this.playerIndex && armies[i] > 1) {
+        validSources.push(i);
       }
     }
-    
-    if (bestTile === -1 || mostArmies <= 1) {
+
+    if (validSources.length === 0) {
       return null;
     }
 
-    const adjacent = getAdjacentIndices(bestTile, width, height);
+    // Sort by army count (descending) but try different tiles to avoid oscillation
+    validSources.sort((a, b) => armies[b] - armies[a]);
+
+    // Try each source tile in order
+    for (const source of validSources) {
+      const move = this.findBestMoveFromTile(source, width, height, armies, terrain);
+      if (move && !this.wouldOscillate(move)) {
+        return move;
+      }
+    }
+
+    // If all moves would oscillate, pick the best non-oscillating move anyway
+    for (const source of validSources) {
+      const move = this.findBestMoveFromTile(source, width, height, armies, terrain);
+      if (move) {
+        return move;
+      }
+    }
+
+    return null;
+  }
+
+  private findBestMoveFromTile(source: number, width: number, height: number, armies: number[], terrain: number[]): Move | null {
+    const adjacent = getAdjacentIndices(source, width, height);
     
-    // Simple Rule 2: Priority order - Cities > Enemy > Empty > Own
+    // Priority order: Cities > Enemy > Empty > Own
     for (const adj of adjacent) {
       if (terrain[adj] === -6) { // City
-        return { from: bestTile, to: adj };
+        return { from: source, to: adj };
       }
     }
     
     for (const adj of adjacent) {
       if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex) { // Enemy
-        return { from: bestTile, to: adj };
+        return { from: source, to: adj };
       }
     }
     
     for (const adj of adjacent) {
       if (terrain[adj] === -1) { // Empty
-        return { from: bestTile, to: adj };
+        return { from: source, to: adj };
       }
     }
     
     for (const adj of adjacent) {
       if (terrain[adj] === this.playerIndex) { // Own territory
-        return { from: bestTile, to: adj };
+        return { from: source, to: adj };
       }
     }
     
     return null;
+  }
+
+  private wouldOscillate(move: Move): boolean {
+    // Check if this move is the reverse of the last move
+    if (this.lastMove && 
+        this.lastMove.from === move.to && 
+        this.lastMove.to === move.from) {
+      return true;
+    }
+
+    // Check for repeated patterns in recent history
+    const recentMoves = this.moveHistory.slice(-6);
+    let oscillationCount = 0;
+    
+    for (const histMove of recentMoves) {
+      if (histMove.from === move.from && histMove.to === move.to) {
+        oscillationCount++;
+      }
+    }
+    
+    return oscillationCount >= 2;
   }
 
   private getMoveType(targetTile: number, terrain: number[]): string {
