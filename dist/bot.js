@@ -48,12 +48,15 @@ class GeneralsBot {
         this.generals = [];
         this.cities = [];
         this.map = [];
+        this.currentRoom = 'Lobby';
         this.serverUrl = serverUrl;
         this.gameId = gameId;
+        this.currentRoom = gameId || 'Lobby';
         // Configure socket options for HTTPS connections
         const socketOptions = {
             transports: ['websocket', 'polling'],
             timeout: 20000,
+            forceNew: true, // Force new connection instead of reusing
         };
         // Add SSL options for HTTPS connections
         if (serverUrl.startsWith('https://')) {
@@ -70,17 +73,46 @@ class GeneralsBot {
                 throw new Error('BOT_USER_ID environment variable is required');
             }
             this.socket.emit('set_username', userId, userId);
+            // Query current room on connect
+            this.socket.emit('get_current_room');
             if (this.gameId) {
                 console.log(`Joining game: ${this.gameId}`);
                 this.socket.emit('join_private', this.gameId, userId);
             }
+            // Removed auto-join to 1v1 queue
+        });
+        this.socket.on('current_room', (data) => {
+            if (data.room) {
+                console.log(`🏠 Server says bot is in room: ${data.room}`);
+                this.currentRoom = data.room;
+                this.gameId = data.room;
+            }
             else {
-                this.socket.emit('join_1v1', userId);
+                console.log(`🏠 Server says bot is not in any room`);
+                this.currentRoom = 'Lobby';
             }
         });
         this.socket.on('game_start', (data) => {
             this.playerIndex = data.playerIndex;
             console.log(`Game started, player ${this.playerIndex}`);
+        });
+        this.socket.on('joined_as_player', (data) => {
+            console.log(`✅ Joined as player ${data.playerIndex}`);
+            // Update current room when successfully joining
+            if (this.gameId) {
+                this.currentRoom = this.gameId;
+                console.log(`✅ Updated currentRoom to: ${this.currentRoom}`);
+            }
+        });
+        this.socket.on('game_already_started', () => {
+            console.log(`⚠️ Game already started, staying in room: ${this.gameId}`);
+            // If we tried to join a game that already started, we're still in that room
+            if (this.gameId) {
+                this.currentRoom = this.gameId;
+            }
+        });
+        this.socket.on('username_taken', (data) => {
+            console.log(`❌ Username taken: ${data.username}`);
         });
         this.socket.on('game_update', (data) => {
             this.cities = (0, utils_1.patch)(this.cities, data.cities_diff);
@@ -132,16 +164,37 @@ class GeneralsBot {
         this.generals = [];
         this.cities = [];
         this.map = [];
+        this.currentRoom = 'Lobby';
     }
     makeMove() {
         const move = this.findExpansionMove();
         if (move) {
-            console.log(`${move.from}→${move.to}`);
+            const { armies, terrain } = this.parseMap();
+            const moveType = this.getMoveType(move.to, terrain);
+            console.log(`${move.from}→${move.to}(${armies[move.from]}→${armies[move.to]}) ${moveType}`);
             this.socket.emit('attack', move.from, move.to);
         }
         else {
-            console.log(`NO MOVES`);
+            const { armies, terrain } = this.parseMap();
+            const myTiles = terrain.filter(t => t === this.playerIndex).length;
+            const availableMoves = this.countAvailableMoves(armies, terrain);
+            console.log(`NO MOVES (${myTiles}t, ${availableMoves}av)`);
         }
+    }
+    getMoveType(targetTile, terrain) {
+        const target = terrain[targetTile];
+        if (target === -1)
+            return 'EXP';
+        if (target === -6)
+            return 'CITY';
+        if (target >= 0 && target !== this.playerIndex)
+            return 'ATK';
+        if (target === this.playerIndex)
+            return 'REIN';
+        return 'UNK';
+    }
+    countAvailableMoves(armies, terrain) {
+        return terrain.filter((t, i) => t === this.playerIndex && armies[i] > 1).length;
     }
     findExpansionMove() {
         const { width, height, armies, terrain } = this.parseMap();
@@ -224,15 +277,6 @@ class GeneralsBot {
                     if (isOnFrontline) {
                         return { from: tile.index, to: adj };
                     }
-                }
-            }
-        }
-        // Fallback: any move with significant army difference
-        for (const tile of myTiles) {
-            const adjacent = (0, utils_1.getAdjacentIndices)(tile.index, width, height);
-            for (const adj of adjacent) {
-                if (terrain[adj] === this.playerIndex && armies[adj] < tile.armies - 5) {
-                    return { from: tile.index, to: adj };
                 }
             }
         }

@@ -17,6 +17,7 @@
             <h2>Bot Status</h2>
             <div id="status">
                 <p><span class="status-indicator status-disconnected"></span><strong>Connection:</strong> <span id="connection-status">Checking...</span></p>
+                <p><strong>Room:</strong> <span id="room-status">Unknown</span></p>
                 <p><strong>Game:</strong> <span id="game-status">Not in game</span></p>
                 <p><strong>Username:</strong> <span id="username">Unknown</span></p>
                 <p><strong>Server:</strong> <span id="server-url">Unknown</span></p>
@@ -32,7 +33,7 @@
 
             <div class="control-group">
                 <label for="game-id">Join Game:</label>
-                <input type="text" id="game-id" placeholder="Game ID (leave empty for 1v1)">
+                <input type="text" id="game-id" placeholder="Game ID (required)" required>
                 <button onclick="joinGame()" class="success">Join Game</button>
             </div>
 
@@ -48,8 +49,86 @@
         </div>
     </div>
 
+    <!-- Toast -->
+    <div id="toast" class="toast">
+        <span id="toast-message"></span>
+        <span class="toast-close">&times;</span>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div id="confirm-modal" class="modal">
+        <div class="modal-content">
+            <p id="confirm-message"></p>
+            <div class="modal-buttons">
+                <button id="confirm-yes" class="danger">Yes</button>
+                <button id="confirm-no">Cancel</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         let statusInterval;
+
+        // Toast functions
+        let toastTimeout;
+        
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            const toastMessage = document.getElementById('toast-message');
+            
+            toastMessage.textContent = message;
+            toast.classList.add('show');
+            
+            // Clear existing timeout
+            if (toastTimeout) clearTimeout(toastTimeout);
+            
+            // Auto-hide after 5 seconds
+            toastTimeout = setTimeout(() => {
+                hideToast();
+            }, 5000);
+        }
+
+        function hideToast() {
+            document.getElementById('toast').classList.remove('show');
+            if (toastTimeout) {
+                clearTimeout(toastTimeout);
+                toastTimeout = null;
+            }
+        }
+
+        // Setup toast close button
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelector('.toast-close').onclick = hideToast;
+        });
+
+        // Confirmation modal functions
+        function showConfirm(message) {
+            return new Promise((resolve) => {
+                const modal = document.getElementById('confirm-modal');
+                const messageEl = document.getElementById('confirm-message');
+                const yesBtn = document.getElementById('confirm-yes');
+                const noBtn = document.getElementById('confirm-no');
+                
+                messageEl.textContent = message;
+                modal.style.display = 'block';
+                
+                const cleanup = () => {
+                    modal.style.display = 'none';
+                    yesBtn.onclick = null;
+                    noBtn.onclick = null;
+                };
+                
+                yesBtn.onclick = () => {
+                    cleanup();
+                    resolve(true);
+                };
+                
+                noBtn.onclick = () => {
+                    cleanup();
+                    resolve(false);
+                };
+            });
+        }
 
         async function fetchStatus() {
             try {
@@ -57,6 +136,7 @@
                 const status = await response.json();
                 
                 document.getElementById('connection-status').textContent = status.connected ? 'Connected' : 'Disconnected';
+                document.getElementById('room-status').textContent = status.currentRoom || 'Not in any room';
                 document.getElementById('game-status').textContent = status.inGame ? `In game (${status.gameId || 'unknown'})` : 'Not in game';
                 document.getElementById('username').textContent = status.username || 'Unknown';
                 document.getElementById('server-url').textContent = status.serverUrl || 'Unknown';
@@ -74,7 +154,7 @@
         async function updateUsername() {
             const username = document.getElementById('new-username').value.trim();
             if (!username) {
-                alert('Please enter a username');
+                showToast('Please enter a username');
                 return;
             }
 
@@ -86,53 +166,58 @@
                 });
                 
                 if (response.ok) {
-                    alert('Username updated successfully');
+                    showToast('Username updated successfully');
                     document.getElementById('new-username').value = '';
                     fetchStatus();
                 } else {
-                    alert('Failed to update username');
+                    showToast('Failed to update username');
                 }
             } catch (error) {
-                alert('Error updating username: ' + error.message);
+                showToast('Error updating username: ' + error.message);
             }
         }
 
         async function joinGame() {
             const gameId = document.getElementById('game-id').value.trim();
+            if (!gameId) {
+                showToast('Game ID is required');
+                return;
+            }
             
             try {
                 const response = await fetch('/api/join', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ gameId: gameId || null })
+                    body: JSON.stringify({ gameId })
                 });
                 
                 if (response.ok) {
-                    alert(gameId ? `Joining game: ${gameId}` : 'Joining 1v1 queue');
+                    showToast(`Joining game: ${gameId}`);
                     document.getElementById('game-id').value = '';
                     fetchStatus();
                 } else {
-                    alert('Failed to join game');
+                    showToast('Failed to join game');
                 }
             } catch (error) {
-                alert('Error joining game: ' + error.message);
+                showToast('Error joining game: ' + error.message);
             }
         }
 
         async function leaveGame() {
-            if (!confirm('Are you sure you want to leave the current game?')) return;
+            const confirmed = await showConfirm('Are you sure you want to leave the current game?');
+            if (!confirmed) return;
             
             try {
                 const response = await fetch('/api/leave', { method: 'POST' });
                 
                 if (response.ok) {
-                    alert('Left game successfully');
+                    showToast('Left game successfully');
                     fetchStatus();
                 } else {
-                    alert('Failed to leave game');
+                    showToast('Failed to leave game');
                 }
             } catch (error) {
-                alert('Error leaving game: ' + error.message);
+                showToast('Error leaving game: ' + error.message);
             }
         }
 
@@ -141,13 +226,13 @@
                 const response = await fetch('/api/reconnect', { method: 'POST' });
                 
                 if (response.ok) {
-                    alert('Reconnecting bot...');
+                    showToast('Reconnecting bot...');
                     fetchStatus();
                 } else {
-                    alert('Failed to reconnect');
+                    showToast('Failed to reconnect');
                 }
             } catch (error) {
-                alert('Error reconnecting: ' + error.message);
+                showToast('Error reconnecting: ' + error.message);
             }
         }
 

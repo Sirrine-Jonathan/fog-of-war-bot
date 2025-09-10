@@ -48,11 +48,8 @@ const args = process.argv.slice(2);
 const serverUrl = args.find(arg => arg.startsWith('--server='))?.split('=')[1] || 
                   process.env.HOST || 
                   'https://fog-of-war-0f4f.onrender.com';
-const gameId = args.find(arg => arg.startsWith('--game='))?.split('=')[1] || 
-               process.env.GAME_ID || 
-               undefined;
 
-let bot = new GeneralsBot(serverUrl, gameId);
+let bot = new GeneralsBot(serverUrl);
 
 // Routes
 app.get('/', (req, res) => {
@@ -82,6 +79,7 @@ app.get('/api/status', requireAuth, (req, res) => {
     connected: bot.socket?.connected || false,
     inGame: bot.playerIndex >= 0,
     gameId: bot.gameId,
+    currentRoom: bot.currentRoom || 'Lobby',
     username: process.env.BOT_USER_ID,
     serverUrl: bot.serverUrl
   };
@@ -109,17 +107,17 @@ app.post('/api/join', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Bot user ID not set' });
   }
   
+  if (!gameId) {
+    return res.status(400).json({ error: 'Game ID is required' });
+  }
+  
   if (!bot.socket?.connected) {
     return res.status(400).json({ error: 'Bot not connected' });
   }
   
-  bot.gameId = gameId || undefined;
-  
-  if (gameId) {
-    bot.socket.emit('join_private', gameId, userId);
-  } else {
-    bot.socket.emit('join_1v1', userId);
-  }
+  console.log(`🎮 Attempting to join game: ${gameId} (currently in: ${bot.currentRoom})`);
+  bot.gameId = gameId;
+  bot.socket.emit('join_private', gameId, userId);
   
   res.json({ success: true });
 });
@@ -151,5 +149,4 @@ app.listen(PORT, () => {
   console.log(`🌐 Web interface running on port ${PORT}`);
   console.log(`🔑 Password: ${WEB_PASSWORD}`);
   console.log(`🤖 Bot connecting to: ${serverUrl}`);
-  if (gameId) console.log(`🎮 Game ID: ${gameId}`);
 });

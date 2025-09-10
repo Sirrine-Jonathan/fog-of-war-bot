@@ -14,15 +14,18 @@ export class GeneralsBot {
   private map: number[] = [];
   public serverUrl: string;
   public gameId?: string;
+  public currentRoom: string = 'Lobby';
 
   constructor(serverUrl: string = 'https://fog-of-war-0f4f.onrender.com', gameId?: string) {
     this.serverUrl = serverUrl;
     this.gameId = gameId;
+    this.currentRoom = gameId || 'Lobby';
     
     // Configure socket options for HTTPS connections
     const socketOptions: any = {
       transports: ['websocket', 'polling'],
       timeout: 20000,
+      forceNew: true, // Force new connection instead of reusing
     };
     
     // Add SSL options for HTTPS connections
@@ -45,17 +48,51 @@ export class GeneralsBot {
       
       this.socket.emit('set_username', userId, userId);
       
+      // Query current room on connect
+      this.socket.emit('get_current_room');
+      
       if (this.gameId) {
         console.log(`Joining game: ${this.gameId}`);
         this.socket.emit('join_private', this.gameId, userId);
+      }
+      // Removed auto-join to 1v1 queue
+    });
+
+    this.socket.on('current_room', (data: any) => {
+      if (data.room) {
+        console.log(`🏠 Server says bot is in room: ${data.room}`);
+        this.currentRoom = data.room;
+        this.gameId = data.room;
       } else {
-        this.socket.emit('join_1v1', userId);
+        console.log(`🏠 Server says bot is not in any room`);
+        this.currentRoom = 'Lobby';
       }
     });
 
     this.socket.on('game_start', (data: GameStartData) => {
       this.playerIndex = data.playerIndex;
       console.log(`Game started, player ${this.playerIndex}`);
+    });
+
+    this.socket.on('joined_as_player', (data: any) => {
+      console.log(`✅ Joined as player ${data.playerIndex}`);
+      // Update current room when successfully joining
+      if (this.gameId) {
+        this.currentRoom = this.gameId;
+        console.log(`✅ Updated currentRoom to: ${this.currentRoom}`);
+      }
+    });
+
+    this.socket.on('game_already_started', () => {
+      console.log(`⚠️ Game already started, staying in room: ${this.gameId}`);
+      // If we tried to join a game that already started, we're still in that room
+      if (this.gameId) {
+        this.currentRoom = this.gameId;
+      }
+    });
+
+    this.socket.on('username_taken', (data: any) => {
+      console.log(`❌ Username taken: ${data.username}`);
     });
 
     this.socket.on('game_update', (data: GameUpdateData) => {
@@ -117,6 +154,7 @@ export class GeneralsBot {
     this.generals = [];
     this.cities = [];
     this.map = [];
+    this.currentRoom = 'Lobby';
   }
 
   private makeMove(): void {
