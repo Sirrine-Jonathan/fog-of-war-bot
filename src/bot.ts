@@ -156,69 +156,75 @@ export class GeneralsBot {
       return null;
     }
 
-    // Get all valid source tiles (my tiles with >1 army)
-    const validSources: number[] = [];
+    // Lava flood: find ALL possible expansion moves and prioritize by distance from center
+    const allMoves: Array<{from: number, to: number, priority: number, armies: number}> = [];
+    
     for (let i = 0; i < terrain.length; i++) {
       if (terrain[i] === this.playerIndex && armies[i] > 1) {
-        validSources.push(i);
+        const adjacent = getAdjacentIndices(i, width, height);
+        
+        for (const adj of adjacent) {
+          let priority = 0;
+          
+          // Priority: Cities > Enemy > Empty > Own (for reinforcement)
+          if (terrain[adj] === -6) { // City
+            priority = 1000;
+          } else if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex) { // Enemy
+            priority = 800;
+          } else if (terrain[adj] === -1) { // Empty
+            priority = 600;
+          } else if (terrain[adj] === this.playerIndex && armies[adj] < armies[i] / 2) { // Own territory (reinforcement)
+            priority = 200;
+          }
+          
+          if (priority > 0) {
+            // Add distance from edges to encourage spreading
+            const distFromEdge = this.getDistanceFromEdges(adj, width, height);
+            priority += distFromEdge * 10; // Prefer moves away from edges
+            
+            allMoves.push({ 
+              from: i, 
+              to: adj, 
+              priority, 
+              armies: armies[i] 
+            });
+          }
+        }
       }
     }
 
-    if (validSources.length === 0) {
+    if (allMoves.length === 0) {
       return null;
     }
 
-    // Sort by army count (descending) but try different tiles to avoid oscillation
-    validSources.sort((a, b) => armies[b] - armies[a]);
+    // Sort by priority (highest first), then by army strength
+    allMoves.sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return b.armies - a.armies;
+    });
 
-    // Try each source tile in order
-    for (const source of validSources) {
-      const move = this.findBestMoveFromTile(source, width, height, armies, terrain);
-      if (move && !this.wouldOscillate(move)) {
-        return move;
+    // Try moves in priority order, avoiding oscillation
+    for (const move of allMoves) {
+      const candidate = { from: move.from, to: move.to };
+      if (!this.wouldOscillate(candidate)) {
+        return candidate;
       }
     }
 
-    // If all moves would oscillate, pick the best non-oscillating move anyway
-    for (const source of validSources) {
-      const move = this.findBestMoveFromTile(source, width, height, armies, terrain);
-      if (move) {
-        return move;
-      }
-    }
-
-    return null;
+    // If all moves would oscillate, take the best one anyway to keep expanding
+    return { from: allMoves[0].from, to: allMoves[0].to };
   }
 
-  private findBestMoveFromTile(source: number, width: number, height: number, armies: number[], terrain: number[]): Move | null {
-    const adjacent = getAdjacentIndices(source, width, height);
+  private getDistanceFromEdges(pos: number, width: number, height: number): number {
+    const x = pos % width;
+    const y = Math.floor(pos / width);
     
-    // Priority order: Cities > Enemy > Empty > Own
-    for (const adj of adjacent) {
-      if (terrain[adj] === -6) { // City
-        return { from: source, to: adj };
-      }
-    }
+    const distFromLeft = x;
+    const distFromRight = width - 1 - x;
+    const distFromTop = y;
+    const distFromBottom = height - 1 - y;
     
-    for (const adj of adjacent) {
-      if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex) { // Enemy
-        return { from: source, to: adj };
-      }
-    }
-    
-    for (const adj of adjacent) {
-      if (terrain[adj] === -1) { // Empty
-        return { from: source, to: adj };
-      }
-    }
-    
-    for (const adj of adjacent) {
-      if (terrain[adj] === this.playerIndex) { // Own territory
-        return { from: source, to: adj };
-      }
-    }
-    
-    return null;
+    return Math.min(distFromLeft, distFromRight, distFromTop, distFromBottom);
   }
 
   private wouldOscillate(move: Move): boolean {
