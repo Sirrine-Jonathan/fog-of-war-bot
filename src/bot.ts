@@ -156,8 +156,9 @@ export class GeneralsBot {
       return null;
     }
 
-    // Lava flood: find ALL possible expansion moves and prioritize by distance from center
+    // Lava flood: radiate outward from generative sources (general + cities)
     const allMoves: Array<{from: number, to: number, priority: number, armies: number}> = [];
+    const generalPos = this.generals[this.playerIndex];
     
     for (let i = 0; i < terrain.length; i++) {
       if (terrain[i] === this.playerIndex && armies[i] > 1) {
@@ -178,9 +179,14 @@ export class GeneralsBot {
           }
           
           if (priority > 0) {
-            // Add distance from edges to encourage spreading
-            const distFromEdge = this.getDistanceFromEdges(adj, width, height);
-            priority += distFromEdge * 10; // Prefer moves away from edges
+            // Radial expansion bonus: prefer moves that push away from generative sources
+            const radiationBonus = this.getRadiationBonus(i, adj, generalPos, width, height);
+            priority += radiationBonus;
+            
+            // Push armies out from interior: bonus for moves from high-army tiles
+            if (armies[i] > 10) {
+              priority += Math.min(armies[i] * 2, 200); // More armies = higher priority to move
+            }
             
             allMoves.push({ 
               from: i, 
@@ -215,16 +221,32 @@ export class GeneralsBot {
     return { from: allMoves[0].from, to: allMoves[0].to };
   }
 
-  private getDistanceFromEdges(pos: number, width: number, height: number): number {
-    const x = pos % width;
-    const y = Math.floor(pos / width);
+  private getRadiationBonus(from: number, to: number, generalPos: number, width: number, height: number): number {
+    if (generalPos === -1) return 0;
     
-    const distFromLeft = x;
-    const distFromRight = width - 1 - x;
-    const distFromTop = y;
-    const distFromBottom = height - 1 - y;
+    const fromDistToGeneral = this.getManhattanDistance(from, generalPos, width);
+    const toDistToGeneral = this.getManhattanDistance(to, generalPos, width);
     
-    return Math.min(distFromLeft, distFromRight, distFromTop, distFromBottom);
+    // Bonus for moves that increase distance from general (radiating outward)
+    if (toDistToGeneral > fromDistToGeneral) {
+      return 100; // Encourage outward radiation
+    }
+    
+    // Penalty for moves toward general (except for reinforcement)
+    if (toDistToGeneral < fromDistToGeneral) {
+      return -50; // Discourage inward movement
+    }
+    
+    return 0;
+  }
+
+  private getManhattanDistance(pos1: number, pos2: number, width: number): number {
+    const x1 = pos1 % width;
+    const y1 = Math.floor(pos1 / width);
+    const x2 = pos2 % width;
+    const y2 = Math.floor(pos2 / width);
+    
+    return Math.abs(x1 - x2) + Math.abs(y1 - y2);
   }
 
   private wouldOscillate(move: Move): boolean {
