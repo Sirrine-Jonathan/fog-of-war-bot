@@ -12,6 +12,7 @@ export interface GameUpdateData {
 export interface Move {
   from: number;
   to: number;
+  priority?: string;
 }
 
 export const TILE_EMPTY = -1;

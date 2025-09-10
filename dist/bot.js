@@ -48,6 +48,7 @@ class GeneralsBot {
         this.generals = [];
         this.cities = [];
         this.map = [];
+        this.turnCount = 0;
         this.serverUrl = serverUrl;
         this.gameId = gameId;
         // Configure socket options for HTTPS connections
@@ -86,10 +87,11 @@ class GeneralsBot {
             this.cities = (0, utils_1.patch)(this.cities, data.cities_diff);
             this.map = (0, utils_1.patch)(this.map, data.map_diff);
             this.generals = data.generals;
+            this.turnCount++;
             const { armies, terrain } = this.parseMap();
             const myTiles = terrain.filter(t => t === this.playerIndex).length;
             const myArmies = armies.reduce((sum, army, i) => terrain[i] === this.playerIndex ? sum + army : sum, 0);
-            console.log(`T${myTiles} A${myArmies}`);
+            console.log(`T${this.turnCount} T${myTiles} A${myArmies}`);
             this.makeMove();
         });
         this.socket.on('game_won', (data) => {
@@ -132,111 +134,128 @@ class GeneralsBot {
         this.generals = [];
         this.cities = [];
         this.map = [];
+        this.turnCount = 0;
     }
     makeMove() {
-        const move = this.findExpansionMove();
+        const move = this.findStrategicMove();
         if (move) {
-            console.log(`${move.from}→${move.to}`);
+            const { armies, terrain } = this.parseMap();
+            const moveType = this.getMoveType(move.to, terrain);
+            const strategy = this.getStrategyType(move, armies, terrain);
+            console.log(`T${this.turnCount} ${move.from}→${move.to}(${armies[move.from]}→${armies[move.to]}) ${moveType} [${strategy}]`);
             this.socket.emit('attack', move.from, move.to);
         }
         else {
-            console.log(`NO MOVES`);
+            const { armies, terrain } = this.parseMap();
+            const myTiles = terrain.filter(t => t === this.playerIndex).length;
+            const availableMoves = this.countAvailableMoves(armies, terrain);
+            console.log(`T${this.turnCount} NO MOVES (${myTiles}t, ${availableMoves}av)`);
         }
     }
-    findExpansionMove() {
+    findStrategicMove() {
         const { width, height, armies, terrain } = this.parseMap();
         if (!width || !height || armies.length === 0) {
             return null;
         }
         const generalPos = this.generals[this.playerIndex];
-        // First priority: capture cities (huge strategic value)
+        // Strategic Priority 1: Capture cities with overwhelming force
         const cityMoves = [];
         for (let i = 0; i < terrain.length; i++) {
             if (terrain[i] === this.playerIndex && armies[i] > 1) {
                 const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
                 for (const adj of adjacent) {
-                    if (terrain[adj] === -6 && armies[i] > armies[adj] * 2 + 1) { // City - overwhelming force
-                        // General protection: don't leave general area weak
+                    if (terrain[adj] === -6 && armies[i] > armies[adj] * 2 + 1) {
                         const distFromGeneral = this.getDistance(i, generalPos, width);
-                        if (distFromGeneral > 3 || this.getArmiesNearGeneral(width, height, armies, terrain) > 10) {
-                            cityMoves.push({ from: i, to: adj, armies: armies[i] });
+                        if (distFromGeneral > 3 || this.getArmiesNearGeneral(width, height, armies, terrain) > 15) {
+                            cityMoves.push({ from: i, to: adj, armies: armies[i], priority: 1000 });
                         }
                     }
                 }
             }
         }
         if (cityMoves.length > 0) {
-            cityMoves.sort((a, b) => b.armies - a.armies); // Prefer larger armies
+            cityMoves.sort((a, b) => b.armies - a.armies);
             return { from: cityMoves[0].from, to: cityMoves[0].to };
         }
-        // Second priority: attack enemy territory
+        // Strategic Priority 2: Attack enemy territory with overwhelming force
         const attackMoves = [];
         for (let i = 0; i < terrain.length; i++) {
             if (terrain[i] === this.playerIndex && armies[i] > 1) {
                 const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
                 for (const adj of adjacent) {
-                    if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] * 2 + 1) { // Overwhelming force
-                        // General protection: don't leave general area weak
+                    if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex && armies[i] > armies[adj] * 2 + 1) {
                         const distFromGeneral = this.getDistance(i, generalPos, width);
-                        if (distFromGeneral > 3 || this.getArmiesNearGeneral(width, height, armies, terrain) > 10) {
-                            attackMoves.push({ from: i, to: adj, armies: armies[i] });
+                        if (distFromGeneral > 3 || this.getArmiesNearGeneral(width, height, armies, terrain) > 15) {
+                            attackMoves.push({ from: i, to: adj, armies: armies[i], priority: 800 });
                         }
                     }
                 }
             }
         }
         if (attackMoves.length > 0) {
-            attackMoves.sort((a, b) => b.armies - a.armies); // Prefer larger armies
+            attackMoves.sort((a, b) => b.armies - a.armies);
             return { from: attackMoves[0].from, to: attackMoves[0].to };
         }
-        // Third priority: expand to empty tiles
+        // Strategic Priority 3: Expand to empty tiles (with strategic preference)
         const expansionMoves = [];
         for (let i = 0; i < terrain.length; i++) {
             if (terrain[i] === this.playerIndex && armies[i] > 1) {
                 const adjacent = (0, utils_1.getAdjacentIndices)(i, width, height);
                 for (const adj of adjacent) {
-                    if (terrain[adj] === -1) { // Empty tile
-                        expansionMoves.push({ from: i, to: adj, armies: armies[i] });
+                    if (terrain[adj] === -1) {
+                        // Strategic scoring: prefer expansion near cities or center
+                        let score = armies[i];
+                        const adjAdjacent = (0, utils_1.getAdjacentIndices)(adj, width, height);
+                        for (const adjAdj of adjAdjacent) {
+                            if (terrain[adjAdj] === -6)
+                                score += 100; // Near city
+                        }
+                        const centerDistance = this.getDistance(adj, Math.floor(terrain.length / 2), width);
+                        score += Math.max(0, 20 - centerDistance); // Prefer center
+                        expansionMoves.push({ from: i, to: adj, armies: armies[i], score });
                     }
                 }
             }
         }
         if (expansionMoves.length > 0) {
-            expansionMoves.sort((a, b) => b.armies - a.armies); // Prefer larger armies
+            expansionMoves.sort((a, b) => b.score - a.score);
             return { from: expansionMoves[0].from, to: expansionMoves[0].to };
         }
-        // Fourth priority: move armies toward frontline tiles (tiles that border empty space or cities)
+        // Strategic Priority 4: Reinforce frontline positions
         const myTiles = [];
         for (let i = 0; i < terrain.length; i++) {
             if (terrain[i] === this.playerIndex && armies[i] > 1) {
                 myTiles.push({ index: i, armies: armies[i] });
             }
         }
-        // Sort by army count (highest first)
         myTiles.sort((a, b) => b.armies - a.armies);
         for (const tile of myTiles) {
             const adjacent = (0, utils_1.getAdjacentIndices)(tile.index, width, height);
             for (const adj of adjacent) {
                 if (terrain[adj] === this.playerIndex && armies[adj] < tile.armies - 5) {
-                    // Check if target tile is on frontline (borders empty space or cities)
                     const targetAdjacent = (0, utils_1.getAdjacentIndices)(adj, width, height);
-                    const isOnFrontline = targetAdjacent.some(t => terrain[t] === -1 || terrain[t] === -6);
+                    const isOnFrontline = targetAdjacent.some(t => terrain[t] === -1 || terrain[t] === -6 || (terrain[t] >= 0 && terrain[t] !== this.playerIndex));
                     if (isOnFrontline) {
                         return { from: tile.index, to: adj };
                     }
                 }
             }
         }
-        // Fallback: any move with significant army difference
-        for (const tile of myTiles) {
-            const adjacent = (0, utils_1.getAdjacentIndices)(tile.index, width, height);
-            for (const adj of adjacent) {
-                if (terrain[adj] === this.playerIndex && armies[adj] < tile.armies - 5) {
-                    return { from: tile.index, to: adj };
-                }
-            }
-        }
         return null;
+    }
+    getStrategyType(move, armies, terrain) {
+        const target = terrain[move.to];
+        if (this.generals.includes(move.to))
+            return 'GENERAL_KILL';
+        if (target === -6)
+            return 'CITY_CAPTURE';
+        if (target >= 0 && target !== this.playerIndex)
+            return 'ENEMY_ATTACK';
+        if (target === -1)
+            return 'EXPANSION';
+        if (target === this.playerIndex)
+            return 'REINFORCE';
+        return 'STRATEGIC';
     }
     getArmiesNearGeneral(width, height, armies, terrain) {
         const generalPos = this.generals[this.playerIndex];
@@ -250,6 +269,21 @@ class GeneralsBot {
             }
         }
         return totalArmies;
+    }
+    getMoveType(targetTile, terrain) {
+        const target = terrain[targetTile];
+        if (target === -1)
+            return 'EXP';
+        if (target === -6)
+            return 'CITY';
+        if (target >= 0 && target !== this.playerIndex)
+            return 'ATK';
+        if (target === this.playerIndex)
+            return 'REIN';
+        return 'UNK';
+    }
+    countAvailableMoves(armies, terrain) {
+        return terrain.filter((t, i) => t === this.playerIndex && armies[i] > 1).length;
     }
     getDistance(pos1, pos2, width) {
         const row1 = Math.floor(pos1 / width);
