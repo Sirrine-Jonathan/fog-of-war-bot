@@ -222,7 +222,7 @@ export class GeneralsBot {
   }
 
   private getRadiationBonus(from: number, to: number, generalPos: number, width: number, height: number): number {
-    if (generalPos === -1) return 0;
+    if (generalPos === -1 || generalPos === undefined) return 0;
     
     const fromDistToGeneral = this.getManhattanDistance(from, generalPos, width);
     const toDistToGeneral = this.getManhattanDistance(to, generalPos, width);

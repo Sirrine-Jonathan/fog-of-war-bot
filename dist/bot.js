@@ -225,7 +225,7 @@ class GeneralsBot {
         return { from: allMoves[0].from, to: allMoves[0].to };
     }
     getRadiationBonus(from, to, generalPos, width, height) {
-        if (generalPos === -1)
+        if (generalPos === -1 || generalPos === undefined)
             return 0;
         const fromDistToGeneral = this.getManhattanDistance(from, generalPos, width);
         const toDistToGeneral = this.getManhattanDistance(to, generalPos, width);
