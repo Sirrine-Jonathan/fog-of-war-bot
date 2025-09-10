@@ -145,9 +145,6 @@ export class GeneralsBot {
       case 'FLOOD':
         move = this.findLavaFloodMove();
         break;
-      case 'HYBRID':
-        move = this.findHybridMove();
-        break;
       case 'HUNT':
         move = this.findHuntMove();
         break;
@@ -178,15 +175,18 @@ export class GeneralsBot {
   }
 
   private getCurrentPhase(): string {
-    if (this.turnCount <= 15) {
-      return 'FLOOD';
-    } else if (this.turnCount <= 30) {
-      return 'HYBRID';
-    } else if (this.targetGeneral !== -1) {
+    // Always prioritize assault if we've discovered an enemy general
+    if (this.targetGeneral !== -1) {
       return 'ASSAULT';
-    } else {
-      return 'HUNT';
     }
+    
+    // Expand for first 50 turns regardless
+    if (this.turnCount <= 50) {
+      return 'FLOOD';
+    }
+    
+    // After turn 50, if no general found, aggressive hunt mode
+    return 'HUNT';
   }
 
   private updateStrategicIntel(): void {
@@ -210,7 +210,7 @@ export class GeneralsBot {
     }
   }
 
-  // PHASE 1: Lava Flood (Turns 1-15) - Maximum territorial expansion
+  // PHASE 1: Lava Flood (Turns 1-50) - Maximum territorial expansion with enemy attacks
   private findLavaFloodMove(): Move | null {
     const { width, height, armies, terrain } = this.parseMap();
     
@@ -230,8 +230,8 @@ export class GeneralsBot {
           
           if (terrain[adj] === -6) { // City
             priority = 1000;
-          } else if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex) { // Enemy
-            priority = 800;
+          } else if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex) { // Enemy - HIGH PRIORITY for discovery
+            priority = 900;
           } else if (terrain[adj] === -1) { // Empty
             priority = 600;
           } else if (terrain[adj] === this.playerIndex && armies[adj] < armies[i] / 2) { // Own territory (reinforcement)
@@ -264,39 +264,7 @@ export class GeneralsBot {
     return { from: allMoves[0].from, to: allMoves[0].to };
   }
 
-  // PHASE 2: Hybrid (Turns 16-30) - Expansion + Enemy Search
-  private findHybridMove(): Move | null {
-    const { width, height, armies, terrain } = this.parseMap();
-    
-    if (!width || !height || armies.length === 0) {
-      return null;
-    }
-
-    // Priority 1: Attack any visible enemy territory
-    const enemyAttacks: Array<{from: number, to: number, armies: number}> = [];
-    
-    for (let i = 0; i < terrain.length; i++) {
-      if (terrain[i] === this.playerIndex && armies[i] > 3) {
-        const adjacent = getAdjacentIndices(i, width, height);
-        
-        for (const adj of adjacent) {
-          if (terrain[adj] >= 0 && terrain[adj] !== this.playerIndex) {
-            enemyAttacks.push({ from: i, to: adj, armies: armies[i] });
-          }
-        }
-      }
-    }
-    
-    if (enemyAttacks.length > 0) {
-      enemyAttacks.sort((a, b) => b.armies - a.armies);
-      return { from: enemyAttacks[0].from, to: enemyAttacks[0].to };
-    }
-
-    // Priority 2: Continue lava flood expansion
-    return this.findLavaFloodMove();
-  }
-
-  // PHASE 3: Hunt (Turns 31+, no general found) - Aggressive enemy search
+  // PHASE 2: Hunt (Turn 51+, no general found) - Aggressive enemy search
   private findHuntMove(): Move | null {
     const { width, height, armies, terrain } = this.parseMap();
     
@@ -327,7 +295,7 @@ export class GeneralsBot {
     return null;
   }
 
-  // PHASE 4: Assault (General found) - Coordinated attack
+  // PHASE 3: Assault (General found) - Coordinated attack
   private findAssaultMove(): Move | null {
     const { width, height, armies, terrain } = this.parseMap();
     
